@@ -7,8 +7,8 @@ from sklearn.model_selection import train_test_split # type: ignore
 np.random.seed(42)
 
 # load the tmdb datasets
-movies = pd.read_csv('tmdb_5000_movies.csv')
-credits = pd.read_csv('tmdb_5000_credits.csv')
+movies = pd.read_csv('data/tmdb_5000_movies.csv')
+credits = pd.read_csv('data/tmdb_5000_credits.csv')
 
 # merge on movie id
 data = movies.merge(credits, left_on='id', right_on='movie_id', suffixes=('', '_c'))
@@ -93,12 +93,17 @@ Phi_scale = scaler.fit_transform(Phi)
 print(f"Train: {Phi_train.shape[0]}, Test: {Phi_test.shape[0]}")
 print(f"Features: {len(feature_cols)}")
 
-#  export for R 
-
-export_df = data_clean[['id','title'] + feature_cols + ['log_revenue']].reset_index(drop=True)
+# export traditional features for R
+export_df = data_clean[['id','title','release_date'] + feature_cols + ['log_revenue']].reset_index(drop=True)
 export_df.to_csv("data/movies_clean.csv", index=False)
 print("Saved data/movies_clean.csv")
 
-# still need to:
-# - use pytrends to pull 4-week pre-release search interest
-# - twitter (use tweepy or a Kaggle dataset for pre-release mention volume)
+# join google trends if cache exists
+try:
+    trends = pd.read_csv('data/trends_cache.csv')
+    export_df = export_df.merge(trends, on='id', how='left')
+    export_df['google_trends_interest'] = export_df['google_trends_interest'].fillna(0.0)
+    export_df.to_csv("data/movies_clean_enriched.csv", index=False)
+    print(f"Saved data/movies_clean_enriched.csv with {export_df['google_trends_interest'].notna().sum()} trends values")
+except FileNotFoundError:
+    print("No trends cache found, run data/fetch_trends.py first")

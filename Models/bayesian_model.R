@@ -1,7 +1,8 @@
 library(dplyr)
 
-data <- read.csv("data/movies_clean.csv")
-head(data)
+setwd("/Users/bellafratantonio/Desktop/cs4420/DS4420_Final_Proj-main")
+movies_data <- read.csv("data/movies_clean.csv")
+head(movies_data)
 
 feature_cols <- c(
   "log_budget", "runtime", "popularity", "vote_average", "vote_count",
@@ -12,8 +13,8 @@ feature_cols <- c(
   "genre_horror", "genre_romance", "genre_science_fiction", "genre_thriller"
 )
 
-Phi <- as.matrix(data[, feature_cols])
-y <- data$log_revenue
+Phi <- as.matrix(movies_data[, feature_cols])
+y <- movies_data$log_revenue
 Phi_scaled <- scale(Phi)
 
 # add bias column
@@ -100,11 +101,97 @@ run_mcmc <- function(y, X, n_iter = 10000, burn_in = 2000,
   list(beta = beta_samples[keep, ], sigma2 = sigma2_samples[keep])
 }
 
-# still need to:
+# run mcmc on traditional features
+cat("Running MCMC traditional features...\n")
+mcmc_trad <- run_mcmc(y_train, Phi_train)
 
-# posterior <- run_mcmc(y_train, Phi_train)
-#
-# predictions: sample from posterior predictive
-# compare: traditional features vs traditional + digital signals
-# metrics: RMSE, MAE, R-squared, 90% coverage, interval width
-# plots: trace plots, posterior densities, predicted vs actual with credible intervals
+# check convergence with trace plots
+plot(mcmc_trad$beta[, 1], type = "l", main = "Convergence of beta bias", xlab = "Iteration", ylab = "beta")
+plot(mcmc_trad$beta[, 2], type = "l", main = "Convergence of beta log_budget", xlab = "Iteration", ylab = "beta")
+plot(mcmc_trad$sigma2, type = "l", main = "Convergence of sigma2", xlab = "Iteration", ylab = "sigma2")
+
+# check ACF plots
+acf(mcmc_trad$beta[, 1], main = "ACF beta bias")
+acf(mcmc_trad$beta[, 2], main = "ACF beta log_budget")
+acf(mcmc_trad$sigma2, main = "ACF sigma2")
+
+# thin every 10th sample
+thinned_beta   <- mcmc_trad$beta[seq(1, nrow(mcmc_trad$beta), by = 10), ]
+thinned_sigma2 <- mcmc_trad$sigma2[seq(1, length(mcmc_trad$sigma2), by = 10)]
+
+acf(thinned_beta[, 1], main = "ACF beta bias thinned")
+acf(thinned_beta[, 2], main = "ACF beta log_budget thinned")
+
+# posterior coefficient summary
+coef_names  <- c("bias", feature_cols)
+beta_means  <- colMeans(thinned_beta)
+beta_ci     <- apply(thinned_beta, 2, quantile, c(0.025, 0.975))
+
+coef_summary <- data.frame(
+  feature = coef_names,
+  mean    = beta_means,
+  lower95 = beta_ci[1, ],
+  upper95 = beta_ci[2, ]
+)
+print(coef_summary)
+
+# posterior predictive mean for each test point
+pred_matrix <- Phi_test %*% t(thinned_beta)
+y_hat_trad  <- rowMeans(pred_matrix)
+
+# 95% credible intervals
+S <- nrow(thinned_beta)
+pred_draws <- matrix(NA, nrow(Phi_test), S)
+for (s in 1:S) {
+  mu_s <- Phi_test %*% thinned_beta[s, ]
+  pred_draws[, s] <- rnorm(nrow(Phi_test), mean = mu_s, sd = sqrt(thinned_sigma2[s]))
+}
+ci_lower <- apply(pred_draws, 1, quantile, 0.025)
+ci_upper <- apply(pred_draws, 1, quantile, 0.975)
+coverage  <- mean(y_test >= ci_lower & y_test <= ci_upper)
+
+# metrics
+rmse_trad <- sqrt(mean((y_hat_trad - y_test)^2))
+mae_trad  <- mean(abs(y_hat_trad - y_test))
+r2_trad   <- 1 - sum((y_test - y_hat_trad)^2) / sum((y_test - mean(y_test))^2)
+
+cat(sprintf("RMSE: %.4f\n", rmse_trad))
+cat(sprintf("MAE:  %.4f\n", mae_trad))
+cat(sprintf("R2:   %.4f\n", r2_trad))
+cat(sprintf("95pct CI coverage: %.1f%%\n", coverage * 100))
+
+# predicted vs actual
+plot(y_test, y_hat_trad,
+     xlab = "actual log revenue", ylab = "predicted log revenue",
+     main = "Bayesian traditional predicted vs actual",
+     pch = 16, col = rgb(0, 0, 1, 0.4))
+abline(0, 1, col = "red", lwd = 2)
+
+# run mcmc on enriched features
+data_enrich <- read.csv("data/movies_clean_enriched.csv")
+enriched_cols <- c(feature_cols, "google_trends_interest")
+
+Phi_e        <- as.matrix(data_enrich[, enriched_cols])
+Phi_e_scaled <- cbind(bias = 1, scale(Phi_e))
+Phi_e_train  <- Phi_e_scaled[train_indices, ]
+Phi_e_test   <- Phi_e_scaled[-train_indices, ]
+
+cat("Running MCMC enriched features...\n")
+mcmc_enrich      <- run_mcmc(y_train, Phi_e_train)
+thinned_beta_e   <- mcmc_enrich$beta[seq(1, nrow(mcmc_enrich$beta), by = 10), ]
+thinned_sigma2_e <- mcmc_enrich$sigma2[seq(1, length(mcmc_enrich$sigma2), by = 10)]
+
+y_hat_enrich <- rowMeans(Phi_e_test %*% t(thinned_beta_e))
+rmse_enrich  <- sqrt(mean((y_hat_enrich - y_test)^2))
+mae_enrich   <- mean(abs(y_hat_enrich - y_test))
+r2_enrich    <- 1 - sum((y_test - y_hat_enrich)^2) / sum((y_test - mean(y_test))^2)
+
+cat(sprintf("RMSE: %.4f\n", rmse_enrich))
+cat(sprintf("MAE:  %.4f\n", mae_enrich))
+cat(sprintf("R2:   %.4f\n", r2_enrich))
+
+# comparison table
+cat("\n--- traditional vs enriched ---\n")
+cat(sprintf("RMSE: %.4f -> %.4f\n", rmse_trad, rmse_enrich))
+cat(sprintf("MAE:  %.4f -> %.4f\n", mae_trad,  mae_enrich))
+cat(sprintf("R2:   %.4f -> %.4f\n", r2_trad,   r2_enrich))

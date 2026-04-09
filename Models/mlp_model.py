@@ -124,7 +124,76 @@ ss_tot = np.sum((y_test - np.mean(y_test)) ** 2)
 r2 = 1 - ss_res / ss_tot
 print(f"Test R-squared: {r2:.4f}")
 
-# still need to:
-# - train second model with digital signal features (google trends + twitter)
-# - compare metrics between traditional vs enriched
-# - save results 
+# store traditional metrics
+rmse_trad = rmse
+mae_trad  = mae
+r2_trad   = r2
+
+# load enriched data
+data_enrich    = pd.read_csv('data/movies_clean_enriched.csv')
+enriched_cols  = feature_cols + ['google_trends_interest']
+
+Phi_e       = data_enrich[enriched_cols].to_numpy()
+y_e         = data_enrich['log_revenue'].to_numpy()
+
+scaler_e    = MinMaxScaler()
+Phi_e_scale = scaler_e.fit_transform(Phi_e)
+
+n_e         = Phi_e_scale.shape[0]
+Phi_e_scale = np.column_stack([np.ones(n_e), Phi_e_scale])
+
+[Phi_e_train, Phi_e_test, y_e_train, y_e_test] = train_test_split(
+    Phi_e_scale, y_e, test_size=0.2, random_state=42)
+
+# train enriched MLP
+X_e  = Phi_e_train
+p_e  = X_e.shape[1]
+
+W1_e = np.random.randn(p_e, q) * np.sqrt(2/p_e)
+W2_e = np.random.randn(q, 1)   * np.sqrt(2/q)
+
+def f_e(x):
+    h = relu(W1_e.T.dot(x))
+    return W2_e.T.dot(h)
+
+errors_e = []
+n_e_tr   = X_e.shape[0]
+
+for epoch in range(epochs):
+    dW2_e = 0
+    for i in range(n_e_tr):
+        x = np.reshape(X_e[i], (p_e, 1))
+        h = relu(W1_e.T.dot(x))
+        dW2_e += (1/n_e_tr) * (f_e(x) - y_e_train[i]) * h
+    W2_e = W2_e - eta * dW2_e
+
+    dW1_e = 0
+    for i in range(n_e_tr):
+        x = np.reshape(X_e[i], (p_e, 1))
+        h = relu(W1_e.T.dot(x))
+        mat1 = np.heaviside(h, 0)
+        dW1_e += (1/n_e_tr) * (f_e(x) - y_e_train[i]) * np.kron(x, (W2_e * mat1).T)
+    W1_e = W1_e - eta * dW1_e
+
+    loss_e = 0
+    for i in range(n_e_tr):
+        x = np.reshape(X_e[i], (p_e, 1))
+        loss_e += (f_e(x)[0, 0] - y_e_train[i]) ** 2
+    errors_e.append(loss_e / n_e_tr)
+
+    if (epoch + 1) % 100 == 0:
+        print(f"Epoch {epoch+1}/{epochs}, MSE: {errors_e[-1]:.4f}")
+
+# enriched test metrics
+preds_e = np.array([f_e(np.reshape(Phi_e_test[i], (p_e, 1)))[0, 0]
+                    for i in range(Phi_e_test.shape[0])])
+
+rmse_enrich = np.sqrt(np.mean((preds_e - y_e_test) ** 2))
+mae_enrich  = np.mean(np.abs(preds_e - y_e_test))
+r2_enrich   = 1 - np.sum((y_e_test - preds_e) ** 2) / np.sum((y_e_test - np.mean(y_e_test)) ** 2)
+
+# comparison
+print("\n--- traditional vs enriched ---")
+print(f"RMSE: {rmse_trad:.4f} -> {rmse_enrich:.4f}")
+print(f"MAE:  {mae_trad:.4f}  -> {mae_enrich:.4f}")
+print(f"R2:   {r2_trad:.4f}   -> {r2_enrich:.4f}")
